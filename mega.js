@@ -1,26 +1,19 @@
-
 import * as mega from "megajs";
 import fs from "fs";
 
-// Mega authentication credentials
 const auth = {
-    email: "senalmd57@gmail.com", // your mega account login email
-    password: "Sayu11@#", // your mega account login password
-    userAgent:
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/42.0.2311.135 Safari/537.36 Edge/12.246",
+    email: "mrsenalff@gmail.com",
+    password: "SenalFf@11#",
+    userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
 };
 
 export const upload = (filePath, fileName) => {
     return new Promise((resolve, reject) => {
         try {
             const storage = new mega.Storage(auth, (err) => {
-                if (err) {
-                    reject(err);
-                    return;
-                }
+                if (err) return reject(err);
 
                 const readStream = fs.createReadStream(filePath);
-
                 const uploadStream = storage.upload({
                     name: fileName,
                     allowUploadBuffering: true,
@@ -30,27 +23,17 @@ export const upload = (filePath, fileName) => {
 
                 uploadStream.on("complete", (file) => {
                     file.link((err, url) => {
-                        if (err) {
-                            reject(err);
-                        } else {
-                            storage.close();
-                            resolve(url);
-                        }
+                        if (err) return reject(err);
+                        storage.close();
+                        resolve(url);
                     });
                 });
 
-                uploadStream.on("error", (error) => {
-                    reject(error);
-                });
-
-                readStream.on("error", (error) => {
-                    reject(error);
-                });
+                uploadStream.on("error", (error) => reject(error));
+                readStream.on("error", (error) => reject(error));
             });
 
-            storage.on("error", (error) => {
-                reject(error);
-            });
+            storage.on("error", (error) => reject(error));
         } catch (err) {
             reject(err);
         }
@@ -61,19 +44,11 @@ export const download = (url) => {
     return new Promise((resolve, reject) => {
         try {
             const file = mega.File.fromURL(url);
-
             file.loadAttributes((err) => {
-                if (err) {
-                    reject(err);
-                    return;
-                }
-
+                if (err) return reject(err);
                 file.downloadBuffer((err, buffer) => {
-                    if (err) {
-                        reject(err);
-                    } else {
-                        resolve(buffer);
-                    }
+                    if (err) return reject(err);
+                    resolve(buffer);
                 });
             });
         } catch (err) {
