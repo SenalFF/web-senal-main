@@ -1,3 +1,4 @@
+
 import express from "express";
 import fs from "fs";
 import pino from "pino";
@@ -6,6 +7,7 @@ import {
     useMultiFileAuthState,
     delay,
     makeCacheableSignalKeyStore,
+    Browsers,
     jidNormalizedUser,
     fetchLatestBaileysVersion,
 } from "@whiskeysockets/baileys";
@@ -25,6 +27,7 @@ function removeFile(FilePath) {
 
 function getMegaFileId(url) {
     try {
+        // Extract everything after /file/ including the key
         const match = url.match(/\/file\/([^#]+#[^\/]+)/);
         return match ? match[1] : null;
     } catch (error) {
@@ -32,28 +35,11 @@ function getMegaFileId(url) {
     }
 }
 
-// Wait until the WebSocket is fully open (readyState === 1)
-function waitForSocketOpen(sock, timeoutMs = 15000) {
-    return new Promise((resolve) => {
-        if (sock.ws?.readyState === 1) return resolve();
-        const interval = setInterval(() => {
-            if (sock.ws?.readyState === 1) {
-                clearInterval(interval);
-                resolve();
-            }
-        }, 300);
-        setTimeout(() => {
-            clearInterval(interval);
-            resolve(); // resolve anyway to avoid hanging
-        }, timeoutMs);
-    });
-}
-
 router.get("/", async (req, res) => {
     let num = req.query.number;
     let dirs = "./" + (num || `session`);
 
-    removeFile(dirs);
+    await removeFile(dirs);
 
     num = num.replace(/[^0-9]/g, "");
 
@@ -61,7 +47,7 @@ router.get("/", async (req, res) => {
     if (!phone.isValid()) {
         if (!res.headersSent) {
             return res.status(400).send({
-                code: "Invalid phone number. Please enter your full international number (e.g., 15551234567 for US, 447911123456 for UK, 94769872326 for LK, etc.) without + or spaces.",
+                code: "Invalid phone number. Please enter your full international number (e.g., 15551234567 for US, 447911123456 for UK, 84987654321 for Vietnam, etc.) without + or spaces.",
             });
         }
         return;
@@ -72,8 +58,7 @@ router.get("/", async (req, res) => {
         const { state, saveCreds } = await useMultiFileAuthState(dirs);
 
         try {
-            const { version } = await fetchLatestBaileysVersion();
-
+            const { version, isLatest } = await fetchLatestBaileysVersion();
             let KnightBot = makeWASocket({
                 version,
                 auth: {
@@ -85,7 +70,7 @@ router.get("/", async (req, res) => {
                 },
                 printQRInTerminal: false,
                 logger: pino({ level: "fatal" }).child({ level: "fatal" }),
-                browser: ["Windows", "Chrome", "120.0.0"], // ✅ Fixed: Browsers.windows() removed in Baileys 7.x
+                browser: Browsers.windows("Chrome"),
                 markOnlineOnConnect: false,
                 generateHighQualityLinkPreview: false,
                 defaultQueryTimeoutMs: 60000,
@@ -96,7 +81,8 @@ router.get("/", async (req, res) => {
             });
 
             KnightBot.ev.on("connection.update", async (update) => {
-                const { connection, lastDisconnect, isNewLogin, isOnline } = update;
+                const { connection, lastDisconnect, isNewLogin, isOnline } =
+                    update;
 
                 if (connection === "open") {
                     console.log("✅ Connected successfully!");
@@ -111,14 +97,20 @@ router.get("/", async (req, res) => {
                         const megaFileId = getMegaFileId(megaUrl);
 
                         if (megaFileId) {
-                            console.log("✅ Session uploaded to MEGA. File ID:", megaFileId);
-                            const userJid = jidNormalizedUser(num + "@s.whatsapp.net");
+                            console.log(
+                                "✅ Session uploaded to MEGA. File ID:",
+                                megaFileId,
+                            );
+
+                            const userJid = jidNormalizedUser(
+                                num + "@s.whatsapp.net",
+                            );
                             await KnightBot.sendMessage(userJid, {
                                 text: `${megaFileId}`,
                             });
                             console.log("📄 MEGA file ID sent successfully");
                         } else {
-                            console.log("❌ Failed to extract MEGA file ID");
+                            console.log("❌ Failed to upload to MEGA");
                         }
 
                         console.log("🧹 Cleaning up session...");
@@ -127,6 +119,7 @@ router.get("/", async (req, res) => {
                         console.log("✅ Session cleaned up successfully");
                         console.log("🎉 Process completed successfully!");
 
+                        console.log("🛑 Shutting down application...");
                         await delay(2000);
                         process.exit(0);
                     } catch (error) {
@@ -137,58 +130,53 @@ router.get("/", async (req, res) => {
                     }
                 }
 
-                if (isNewLogin) console.log("🔐 New login via pair code");
-                if (isOnline) console.log("📶 Client is online");
+                if (isNewLogin) {
+                    console.log("🔐 New login via pair code");
+                }
+
+                if (isOnline) {
+                    console.log("📶 Client is online");
+                }
 
                 if (connection === "close") {
-                    const statusCode = lastDisconnect?.error?.output?.statusCode;
+                    const statusCode =
+                        lastDisconnect?.error?.output?.statusCode;
 
-                    // If response already sent (pairing code delivered), don't restart
-                    if (res.headersSent) {
-                        console.log("ℹ️ Connection closed after pairing code sent — ignoring.");
-                        return;
-                    }
-
-                    if (statusCode === 401 || statusCode === 428) {
-                        console.log(`❌ Auth error (${statusCode}). Not reconnecting.`);
-                        if (!res.headersSent) {
-                            res.status(503).send({ code: "Auth failed. Please try again." });
-                        }
-                        setTimeout(() => process.exit(1), 2000);
+                    if (statusCode === 401) {
+                        console.log(
+                            "❌ Logged out from WhatsApp. Need to generate new pair code.",
+                        );
                     } else {
-                        console.log(`🔁 Connection closed (${statusCode}) — restarting...`);
+                        console.log("🔁 Connection closed — restarting...");
                         initiateSession();
                     }
                 }
             });
 
-            KnightBot.ev.on("creds.update", saveCreds);
-
             if (!KnightBot.authState.creds.registered) {
-                // ✅ Wait for WebSocket to be fully open before requesting pairing code
-                await waitForSocketOpen(KnightBot, 15000);
-                await delay(2000);
-
-                num = num.replace(/[^\d]/g, "");
+                await delay(3000); // Wait 3 seconds before requesting pairing code
+                num = num.replace(/[^\d+]/g, "");
+                if (num.startsWith("+")) num = num.substring(1);
 
                 try {
                     let code = await KnightBot.requestPairingCode(num);
                     code = code?.match(/.{1,4}/g)?.join("-") || code;
                     if (!res.headersSent) {
                         console.log({ num, code });
-                        res.send({ code });
+                        await res.send({ code });
                     }
                 } catch (error) {
                     console.error("Error requesting pairing code:", error);
                     if (!res.headersSent) {
                         res.status(503).send({
-                            code: "Failed to get pairing code. Please check your number and try again.",
+                            code: "Failed to get pairing code. Please check your phone number and try again.",
                         });
                     }
                     setTimeout(() => process.exit(1), 2000);
                 }
             }
 
+            KnightBot.ev.on("creds.update", saveCreds);
         } catch (err) {
             console.error("Error initializing session:", err);
             if (!res.headersSent) {
@@ -210,10 +198,16 @@ process.on("uncaughtException", (err) => {
     if (e.includes("Connection Closed")) return;
     if (e.includes("Timed Out")) return;
     if (e.includes("Value not found")) return;
-    if (e.includes("Stream Errored")) return;
+    if (
+        e.includes("Stream Errored") ||
+        e.includes("Stream Errored (restart required)")
+    )
+        return;
     if (e.includes("statusCode: 515") || e.includes("statusCode: 503")) return;
     console.log("Caught exception: ", err);
     process.exit(1);
 });
 
 export default router;
+
+  
